@@ -1,44 +1,75 @@
 #!/usr/bin/env python3
 """
 Fetches daily market history and writes data.json for the dashboard.
-No third-party packages needed (standard library only).
+Standard library only.
 
-Sources, in order of preference per item:
-  yahoo  - Yahoo Finance chart API (prices, futures, ETFs, crypto)
-  fred   - St. Louis Fed FRED CSV (Treasury yields; also oil and S&P as backups)
-  stooq  - Stooq CSV (backup only)
+Primary sources (official APIs, free keys, work from GitHub's servers):
+  fred    - FRED API   (needs FRED_API_KEY)        yields, WTI, Brent, S&P 500
+  twelve  - Twelve Data (needs TWELVEDATA_API_KEY)  VTI, VT, BTC, gold, silver
+Last-resort fallback (often blocked from datacenters, harmless to try):
+  yahoo   - Yahoo Finance chart API
 
-If every source for an item fails, the previous data.json values for that
-item are kept so the dashboard never loses history.
+Keys are read from environment variables; the GitHub workflow passes them in
+from repository secrets. If an item can't be fetched, its previous data.json
+values are kept so the dashboard never loses history.
 """
-import json, os, sys, datetime as dt, urllib.request, urllib.parse
+import json, os, sys, time, datetime as dt, urllib.request, urllib.parse
 
 OUT = "data.json"
 YEARS = 10
 START = (dt.date.today() - dt.timedelta(days=365 * YEARS)).isoformat()
-UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+UA = "Mozilla/5.0 (X11; Linux x86_64) market-dashboard/2.0"
+FRED_KEY = os.environ.get("FRED_API_KEY", "").strip()
+TWELVE_KEY = os.environ.get("TWELVEDATA_API_KEY", "").strip()
 
 # id -> list of (source, symbol) to try in order
 SERIES = [
-    ("wti",    [("yahoo", "CL=F"),    ("fred", "DCOILWTICO")]),
-    ("brent",  [("yahoo", "BZ=F"),    ("fred", "DCOILBRENTEU")]),
+    ("wti",    [("fred", "DCOILWTICO"),   ("yahoo", "CL=F")]),
+    ("brent",  [("fred", "DCOILBRENTEU"), ("yahoo", "BZ=F")]),
     ("y1",     [("fred", "DGS1")]),
-    ("y5",     [("fred", "DGS5"),     ("yahoo", "^FVX")]),
-    ("y10",    [("fred", "DGS10"),    ("yahoo", "^TNX")]),
-    ("y30",    [("fred", "DGS30"),    ("yahoo", "^TYX")]),
-    ("spx",    [("yahoo", "^GSPC"),   ("fred", "SP500"),   ("stooq", "^spx")]),
-    ("vti",    [("yahoo", "VTI"),     ("stooq", "vti.us")]),
-    ("vt",     [("yahoo", "VT"),      ("stooq", "vt.us")]),
-    ("btc",    [("yahoo", "BTC-USD"), ("stooq", "btc.v")]),
-    ("gold",   [("yahoo", "GC=F"),    ("stooq", "xauusd")]),
-    ("silver", [("yahoo", "SI=F"),    ("stooq", "xagusd")]),
+    ("y5",     [("fred", "DGS5"),         ("yahoo", "^FVX")]),
+    ("y10",    [("fred", "DGS10"),        ("yahoo", "^TNX")]),
+    ("y30",    [("fred", "DGS30"),        ("yahoo", "^TYX")]),
+    ("spx",    [("fred", "SP500"),        ("yahoo", "^GSPC")]),
+    ("vti",    [("twelve", "VTI"),        ("yahoo", "VTI")]),
+    ("vt",     [("twelve", "VT"),         ("yahoo", "VT")]),
+    ("btc",    [("twelve", "BTC/USD"),    ("yahoo", "BTC-USD")]),
+    ("gold",   [("twelve", "XAU/USD"),    ("yahoo", "GC=F")]),
+    ("silver", [("twelve", "XAG/USD"),    ("yahoo", "SI=F")]),
 ]
 
 
-def get(url, timeout=40):
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+def get(url, timeout=30):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json,*/*"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "replace")
+
+
+def parse_fred(txt):
+    j = json.loads(txt)
+    if "observations" not in j:
+        raise ValueError(j.get("error_message") or txt[:120])
+    pts = []
+    for o in j["observations"]:
+        v = o.get("value", ".")
+        if v in (".", "", None):
+            continue
+        pts.append((o["date"], float(v)))
+    return sorted(pts)
+
+
+def parse_twelve(txt):
+    j = json.loads(txt)
+    if j.get("status") == "error" or "values" not in j:
+        raise ValueError(j.get("message") or txt[:120])
+    pts = {}
+    for row in j["values"]:
+        d = row["datetime"][:10]
+        try:
+            pts[d] = float(row["close"])
+        except (KeyError, ValueError, TypeError):
+            pass
+    return sorted(pts.items())
 
 
 def parse_yahoo(txt):
@@ -51,51 +82,33 @@ def parse_yahoo(txt):
     close = r["indicators"]["quote"][0].get("close") or []
     pts = {}
     for t, v in zip(ts, close):
-        if v is None:
-            continue
-        d = dt.datetime.fromtimestamp(t, dt.timezone.utc).date().isoformat()
-        pts[d] = float(v)  # last value per day wins
+        if v is not None:
+            pts[dt.datetime.fromtimestamp(t, dt.timezone.utc).date().isoformat()] = float(v)
     return sorted(pts.items())
 
 
-def parse_csv(txt, date_col, val_col):
-    lines = [l.strip() for l in txt.splitlines() if l.strip()]
-    if not lines or "," not in lines[0]:
-        raise ValueError(txt[:120])
-    header = [h.strip().lower() for h in lines[0].split(",")]
-    di = header.index(date_col) if date_col in header else 0
-    vi = header.index(val_col) if val_col in header else 1
-    pts = []
-    for line in lines[1:]:
-        cells = line.split(",")
-        if len(cells) <= max(di, vi):
-            continue
-        d, v = cells[di].strip(), cells[vi].strip()
-        if v in (".", "", "null"):
-            continue
-        try:
-            pts.append((d, float(v)))
-        except ValueError:
-            pass
-    return sorted(pts)
-
-
 def fetch(source, sym):
-    if source == "yahoo":
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range={YEARS}y&interval=1d"
-        return parse_yahoo(get(url))
     if source == "fred":
-        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={sym}"
-        pts = parse_csv(get(url), "observation_date", sym.lower())
-        # older FRED exports use header "DATE"
+        if not FRED_KEY:
+            raise ValueError("FRED_API_KEY secret not set")
+        q = urllib.parse.urlencode({"series_id": sym, "api_key": FRED_KEY, "file_type": "json", "observation_start": START})
+        return parse_fred(get("https://api.stlouisfed.org/fred/series/observations?" + q))
+    if source == "twelve":
+        if not TWELVE_KEY:
+            raise ValueError("TWELVEDATA_API_KEY secret not set")
+        q = urllib.parse.urlencode({"symbol": sym, "interval": "1day", "outputsize": 5000, "start_date": START,
+                                    "apikey": TWELVE_KEY, "format": "JSON"})
+        pts = parse_twelve(get("https://api.twelvedata.com/time_series?" + q))
+        time.sleep(1.5)  # free plan allows 8 requests/min
         return pts
-    if source == "stooq":
-        url = f"https://stooq.com/q/d/l/?s={urllib.parse.quote(sym)}&i=d"
-        return parse_csv(get(url), "date", "close")
+    if source == "yahoo":
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range={YEARS}y&interval=1d"
+        return parse_yahoo(get(url, timeout=15))
     raise ValueError(source)
 
 
 def main():
+    print(f"FRED key: {'set' if FRED_KEY else 'MISSING'} | Twelve Data key: {'set' if TWELVE_KEY else 'MISSING'}\n")
     old = {}
     if os.path.exists(OUT):
         try:
@@ -116,13 +129,13 @@ def main():
                 print(f"  ok   {sid:7s} {source}:{sym:12s} {len(pts):5d} pts, last {pts[-1][0]} = {pts[-1][1]}")
                 break
             except Exception as e:
-                errs.append(f"{source}:{sym} -> {type(e).__name__}: {str(e)[:100]}")
+                errs.append(f"{source}:{sym} -> {type(e).__name__}: {str(e)[:120]}")
                 print(f"  fail {sid:7s} {errs[-1]}")
         if got is None:
             prev = old.get(sid)
             if prev and prev.get("points"):
                 got = {"points": prev["points"], "source": prev.get("source"), "error": "stale: " + " | ".join(errs)}
-                print(f"  keep {sid:7s} previous data ({prev['points'][-1][0]})")
+                print(f"  keep {sid:7s} previous data (through {prev['points'][-1][0]})")
             else:
                 got = {"points": [], "source": None, "error": " | ".join(errs)}
                 failures.append(sid)
@@ -131,9 +144,7 @@ def main():
     doc = {"generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "series": out}
     with open(OUT, "w") as f:
         json.dump(doc, f, separators=(",", ":"))
-    size = os.path.getsize(OUT) / 1024
-    print(f"\nWrote {OUT} ({size:.0f} KB). Items with no data at all: {failures or 'none'}")
-    # Exit non-zero only if nothing at all could be fetched (so a single flaky source doesn't fail the job).
+    print(f"\nWrote {OUT} ({os.path.getsize(OUT) / 1024:.0f} KB). Items with no data at all: {failures or 'none'}")
     if len(failures) == len(SERIES):
         sys.exit(1)
 
