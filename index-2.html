@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market history</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="chart.umd.js"></script>
+<script src="chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root{
+    --paper:#F3F5F7; --surface:#FFFFFF; --ink:#1B2430; --muted:#66717D; --rule:#D9DFE5;
+    --accent:#1F5FA8; --up:#1E7F4F; --down:#B4312F; --warn:#9A6A00;
+    --rail:300px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans",-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.45;font-variant-numeric:tabular-nums}
+  button,input,select{font:inherit;color:inherit}
+  button{cursor:pointer}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  .app{display:grid;grid-template-columns:var(--rail) 1fr;min-height:100vh}
+  .rail{background:var(--surface);border-right:1px solid var(--rule);padding:20px 18px;display:flex;flex-direction:column;gap:18px}
+  .rail h1{font-size:18px;font-weight:600;margin:0 0 2px;letter-spacing:-.01em}
+  .rail .sub{color:var(--muted);font-size:12.5px;margin:0}
+  .group{border-top:1px solid var(--rule);padding-top:10px}
+  .group-title{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;color:var(--muted);margin-bottom:4px}
+  .group-title button{border:0;background:none;color:var(--accent);padding:0;font-size:12px}
+  .row{display:grid;grid-template-columns:auto 12px 1fr auto;gap:8px;align-items:center;padding:6px 4px;border-radius:6px}
+  .row:hover{background:var(--paper)}
+  .row input{margin:0;accent-color:var(--accent)}
+  .swatch{width:12px;height:12px;border-radius:3px}
+  .row .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .quote{text-align:right;font-size:12.5px;line-height:1.2}
+  .row .quote .last{font-weight:500}
+  .row .quote .chg{color:var(--muted)}
+  .row .quote .chg.up{color:var(--up)} .row .quote .chg.down{color:var(--down)}
+  .row .quote .err{color:var(--down)}
+  .row .quote .pending{color:var(--muted)}
+  .rail .foot{margin-top:auto;font-size:12px;color:var(--muted)}
+  .rail .foot details{margin-top:8px}
+  .rail .foot summary{cursor:pointer;color:var(--accent)}
+  .rail .foot input[type=text]{width:100%;margin-top:6px;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--surface)}
+
+  .main{padding:22px 28px 40px;min-width:0}
+  .controls{display:flex;flex-wrap:wrap;gap:18px 28px;align-items:end;margin-bottom:18px}
+  .control label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
+  .seg{display:inline-flex;border:1px solid var(--rule);border-radius:8px;background:var(--surface);overflow:hidden}
+  .seg button{border:0;background:none;padding:7px 12px;border-right:1px solid var(--rule);color:var(--muted)}
+  .seg button:last-child{border-right:0}
+  .seg button[aria-pressed=true]{background:var(--ink);color:#fff}
+  .controls .spacer{flex:1}
+  .btn{border:1px solid var(--rule);background:var(--surface);border-radius:8px;padding:7px 12px}
+  .btn:hover{border-color:var(--ink)}
+  .status{font-size:12.5px;color:var(--muted);min-height:18px;margin-bottom:12px}
+
+  .chart-wrap{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:16px 16px 10px;position:relative;height:480px}
+  .chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px}
+  .chart-grid .chart-wrap{height:260px}
+  .chart-wrap h3{margin:0 0 4px;font-size:13px;font-weight:500;color:var(--muted)}
+  .chart-wrap canvas{width:100%!important}
+  .empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted)}
+
+  table{width:100%;border-collapse:collapse;margin-top:22px;background:var(--surface);border:1px solid var(--rule);border-radius:10px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:right;border-top:1px solid var(--rule);white-space:nowrap}
+  th{font-weight:500;color:var(--muted);font-size:12.5px;border-top:0;background:var(--paper)}
+  th:first-child,td:first-child{text-align:left}
+  td.name{font-weight:500}
+  td .unit{color:var(--muted);font-weight:400;font-size:12px;margin-left:4px}
+  .up{color:var(--up)} .down{color:var(--down)}
+  .note{color:var(--muted);font-size:12.5px;margin-top:12px;max-width:70ch}
+
+  @media (max-width:900px){
+    .app{grid-template-columns:1fr}
+    .rail{border-right:0;border-bottom:1px solid var(--rule)}
+    .main{padding:16px}
+    .chart-wrap{height:380px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div>
+      <h1>Market history</h1>
+      <p class="sub">Daily closes. Tick what you want to compare.</p>
+    </div>
+    <div id="groups"></div>
+    <div class="foot">
+      <div id="asof">Loading data…</div>
+      <div style="margin-top:6px">Prices from Yahoo Finance; Treasury yields from FRED. Updated automatically each evening after the US close.</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="controls">
+      <div class="control">
+        <label>Time horizon</label>
+        <div class="seg" id="horizon"></div>
+      </div>
+      <div class="control">
+        <label>Show</label>
+        <div class="seg" id="mode">
+          <button data-v="pct" aria-pressed="true">% change</button>
+          <button data-v="abs" aria-pressed="false">Price / level</button>
+        </div>
+      </div>
+      <div class="control">
+        <label>Layout</label>
+        <div class="seg" id="layout">
+          <button data-v="auto" aria-pressed="true">Auto</button>
+          <button data-v="overlay" aria-pressed="false">One chart</button>
+          <button data-v="grid" aria-pressed="false">Separate</button>
+        </div>
+      </div>
+    </div>
+    <div class="status" id="status"></div>
+
+    <div id="charts"></div>
+
+    <table id="table" hidden>
+      <thead><tr>
+        <th>Item</th><th>Latest</th><th>As of</th><th>Start of window</th>
+        <th>Change</th><th>Change %</th><th>Window low</th><th>Window high</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="note" id="note"></p>
+  </main>
+</div>
+
+<script>
+/* ---------- Configuration ---------- */
+const SERIES = [
+  {id:'wti',    group:'Oil',         name:'WTI crude',            unit:'$/bbl',  src:'yahoo', sym:'CL=F',    color:'#B4532A'},
+  {id:'brent',  group:'Oil',         name:'Brent crude',          unit:'$/bbl',  src:'yahoo', sym:'BZ=F',    color:'#E0A030'},
+  {id:'y1',     group:'Treasury yields', name:'1-year',           unit:'%',      src:'fred',  sym:'DGS1',    color:'#8FB3E0'},
+  {id:'y5',     group:'Treasury yields', name:'5-year',           unit:'%',      src:'fred',  sym:'DGS5',    color:'#4F8AD0', fallback:{src:'yahoo', sym:'^FVX'}},
+  {id:'y10',    group:'Treasury yields', name:'10-year',          unit:'%',      src:'fred',  sym:'DGS10',   color:'#1F5FA8', fallback:{src:'yahoo', sym:'^TNX'}},
+  {id:'y30',    group:'Treasury yields', name:'30-year',          unit:'%',      src:'fred',  sym:'DGS30',   color:'#0F3466', fallback:{src:'yahoo', sym:'^TYX'}},
+  {id:'spx',    group:'Stocks',      name:'S&P 500',              unit:'index',  src:'yahoo', sym:'^GSPC',   color:'#1E7F4F'},
+  {id:'vti',    group:'Stocks',      name:'US total market (VTI)',unit:'$/sh',   src:'yahoo', sym:'VTI',     color:'#4DAA7A'},
+  {id:'vt',     group:'Stocks',      name:'Global market (VT)',   unit:'$/sh',   src:'yahoo', sym:'VT',      color:'#8CCBA8'},
+  {id:'btc',    group:'Crypto',      name:'Bitcoin',              unit:'$',      src:'yahoo', sym:'BTC-USD', color:'#E8741E'},
+  {id:'gold',   group:'Metals',      name:'Gold',                 unit:'$/oz',   src:'yahoo', sym:'GC=F',    color:'#C99A1E'},
+  {id:'silver', group:'Metals',      name:'Silver',               unit:'$/oz',   src:'yahoo', sym:'SI=F',    color:'#7C8794'},
+];
+const DEFAULT_ON = ['wti','y10','spx','btc','gold'];
+const HORIZONS = [['1M',30],['3M',91],['6M',182],['YTD','ytd'],['1Y',365],['2Y',730],['5Y',1826],['Max','max']];
+
+/* ---------- State ---------- */
+const state = {
+  selected: new Set(DEFAULT_ON),
+  horizon: '1Y',
+  mode: 'pct',
+  layout: 'auto',
+  data: {},      // id -> [{t, v}] ascending
+  err: {},       // id -> message
+  charts: [],
+};
+
+/* ---------- Loading (reads data.json produced by fetch_data.py) ---------- */
+async function loadAll() {
+  setStatus('Loading…');
+  let doc;
+  try {
+    const r = await fetch('data.json?t=' + Date.now(), {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    doc = await r.json();
+  } catch (e) {
+    setStatus('data.json is missing or unreadable (' + e.message + '). Run the "Update market data" action in GitHub, then reload.');
+    document.getElementById('asof').textContent = 'No data yet.';
+    SERIES.forEach(s => state.err[s.id] = 'no data.json');
+    renderRail(); renderAll(); return;
+  }
+  const stale = [], missing = [];
+  for (const s of SERIES) {
+    const d = doc.series && doc.series[s.id];
+    if (d && d.points && d.points.length) {
+      state.data[s.id] = d.points.map(([day, v]) => { const [y, m, dd] = day.split('-').map(Number); return {t: Date.UTC(y, m - 1, dd), v}; });
+      if (d.error) stale.push(s.name);
+    } else {
+      state.err[s.id] = (d && d.error) || 'no data';
+      missing.push(s.name);
+    }
+  }
+  document.getElementById('asof').textContent = 'Data updated ' + (doc.generated || 'unknown') + '.';
+  const msgs = [];
+  if (missing.length) msgs.push('Not available: ' + missing.join(', ') + '.');
+  if (stale.length) msgs.push('Last fetch failed, showing older data for: ' + stale.join(', ') + '.');
+  setStatus(msgs.join(' '));
+  renderRail(); renderAll();
+}
+
+/* ---------- Helpers ---------- */
+const fmtNum = (v, unit) => {
+  if (v == null || !isFinite(v)) return '—';
+  const dec = unit === '%' ? 2 : v >= 1000 ? 0 : v >= 100 ? 1 : 2;
+  return v.toLocaleString(undefined, {minimumFractionDigits: dec, maximumFractionDigits: dec});
+};
+const fmtPct = v => (v == null || !isFinite(v)) ? '—' : (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+const fmtDate = t => new Date(t).toLocaleDateString(undefined, {timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric'});
+const cls = v => v > 0 ? 'up' : v < 0 ? 'down' : '';
+function setStatus(m) { document.getElementById('status').textContent = m; }
+
+function windowStart() {
+  const h = HORIZONS.find(x => x[0] === state.horizon)[1];
+  const now = new Date();
+  if (h === 'max') return 0;
+  if (h === 'ytd') return Date.UTC(now.getUTCFullYear(), 0, 1);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - h * 86400000;
+}
+function windowed(id) {
+  const pts = state.data[id]; if (!pts) return null;
+  const start = windowStart();
+  const w = pts.filter(p => p.t >= start);
+  return w.length ? w : pts.slice(-1);
+}
+function selectedSeries() { return SERIES.filter(s => state.selected.has(s.id)); }
+
+/* ---------- Rail ---------- */
+function renderRail() {
+  const groups = [...new Set(SERIES.map(s => s.group))];
+  const host = document.getElementById('groups');
+  host.innerHTML = '';
+  for (const g of groups) {
+    const items = SERIES.filter(s => s.group === g);
+    const allOn = items.every(s => state.selected.has(s.id));
+    const div = document.createElement('div'); div.className = 'group';
+    div.innerHTML = `<div class="group-title"><span>${g}</span><button type="button" data-g="${g}">${allOn ? 'none' : 'all'}</button></div>`;
+    div.querySelector('button').onclick = () => { items.forEach(s => allOn ? state.selected.delete(s.id) : state.selected.add(s.id)); renderRail(); renderAll(); };
+    for (const s of items) {
+      const pts = state.data[s.id];
+      let quote;
+      if (state.err[s.id]) quote = `<div class="err" title="${state.err[s.id]}">unavailable</div>`;
+      else if (!pts) quote = `<div class="pending">loading…</div>`;
+      else {
+        const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+        const d = prev ? (s.unit === '%' ? (last.v - prev.v) : (last.v / prev.v - 1) * 100) : null;
+        const dTxt = d == null ? '' : s.unit === '%' ? `${d > 0 ? '+' : ''}${(d * 100).toFixed(0)} bp` : fmtPct(d);
+        quote = `<div class="last">${fmtNum(last.v, s.unit)}</div><div class="chg ${cls(d)}">${dTxt}</div>`;
+      }
+      const row = document.createElement('label'); row.className = 'row';
+      row.innerHTML = `<input type="checkbox" ${state.selected.has(s.id) ? 'checked' : ''}><span class="swatch" style="background:${s.color}"></span><span class="name">${s.name}</span><span class="quote">${quote}</span>`;
+      row.querySelector('input').onchange = e => { e.target.checked ? state.selected.add(s.id) : state.selected.delete(s.id); renderRail(); renderAll(); };
+      div.appendChild(row);
+    }
+    host.appendChild(div);
+  }
+}
+
+/* ---------- Charts ---------- */
+if (typeof Chart === 'undefined') {
+  document.getElementById('status').textContent = 'chart.umd.js did not load — make sure it is in the same folder as index.html.';
+}
+Chart.defaults.font.family = '"IBM Plex Sans", sans-serif';
+Chart.defaults.color = '#66717D';
+
+function destroyCharts() { state.charts.forEach(c => c.destroy()); state.charts = []; }
+
+function seriesData(s) {
+  const w = windowed(s.id); if (!w) return null;
+  const base = w[0].v;
+  return state.mode === 'pct'
+    ? (s.unit === '%' ? w.map(p => ({x: p.t, y: p.v - base})) : w.map(p => ({x: p.t, y: (p.v / base - 1) * 100})))
+    : w.map(p => ({x: p.t, y: p.v}));
+}
+
+function makeChart(canvas, sers, unitLabel) {
+  const pct = state.mode === 'pct';
+  return new Chart(canvas, {
+    type: 'line',
+    data: {datasets: sers.map(s => ({
+      label: s.name, data: seriesData(s), borderColor: s.color, backgroundColor: s.color,
+      borderWidth: 1.6, pointRadius: 0, pointHitRadius: 6, tension: 0, spanGaps: true,
+    }))},
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false, normalized: true,
+      interaction: {mode: 'nearest', axis: 'x', intersect: false},
+      plugins: {
+        legend: {display: sers.length > 1, position: 'top', align: 'end', labels: {boxWidth: 10, boxHeight: 10, usePointStyle: true, pointStyle: 'rect'}},
+        tooltip: {callbacks: {
+          title: it => fmtDate(it[0].parsed.x),
+          label: it => {
+            const s = sers[it.datasetIndex]; const y = it.parsed.y;
+            if (!pct) return ` ${s.name}: ${fmtNum(y, s.unit)} ${s.unit}`;
+            return ` ${s.name}: ${s.unit === '%' ? (y > 0 ? '+' : '') + y.toFixed(2) + ' pts' : fmtPct(y)}`;
+          }
+        }}
+      },
+      scales: {
+        x: {type: 'time', time: {tooltipFormat: 'MMM d, yyyy'}, grid: {display: false}, ticks: {maxRotation: 0, autoSkipPadding: 24}},
+        y: {
+          position: 'right', grid: {color: '#EDF0F3'},
+          title: {display: !!unitLabel, text: unitLabel},
+          ticks: {callback: v => pct ? (v > 0 ? '+' : '') + v + (unitLabel === 'pts' ? '' : '%') : fmtNum(v, unitLabel)}
+        }
+      }
+    },
+    plugins: pct ? [{id: 'zero', afterDraw(c) {
+      const y = c.scales.y.getPixelForValue(0); if (!isFinite(y)) return;
+      const {left, right} = c.chartArea; const ctx = c.ctx;
+      ctx.save(); ctx.strokeStyle = '#9AA4AE'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke(); ctx.restore();
+    }}] : []
+  });
+}
+
+function renderCharts() {
+  destroyCharts();
+  const host = document.getElementById('charts'); host.innerHTML = '';
+  const sel = selectedSeries().filter(s => state.data[s.id]);
+  if (!sel.length) {
+    host.innerHTML = `<div class="chart-wrap"><div class="empty">${selectedSeries().length ? 'Waiting for data…' : 'Tick one or more items on the left to chart them.'}</div></div>`;
+    return;
+  }
+  const useGrid = state.layout === 'grid' || (state.layout === 'auto' && state.mode === 'abs' && sel.length > 1);
+  if (!useGrid) {
+    const yieldsOnly = sel.every(s => s.unit === '%');
+    const label = state.mode === 'pct' ? (yieldsOnly ? 'pts' : '') : (sel.length === 1 ? sel[0].unit : '');
+    const wrap = document.createElement('div'); wrap.className = 'chart-wrap';
+    wrap.innerHTML = '<canvas></canvas>'; host.appendChild(wrap);
+    state.charts.push(makeChart(wrap.querySelector('canvas'), sel, label));
+    if (state.mode === 'pct' && !yieldsOnly && sel.some(s => s.unit === '%'))
+      document.getElementById('note').textContent = 'Treasury yields are shown as the change in percentage points from the window start, not a percentage of the yield; everything else is % change in price.';
+    else document.getElementById('note').textContent = state.mode === 'abs' && sel.length > 1 ? 'Multiple items on one axis share a scale; switch layout to Separate for items with very different price ranges.' : '';
+  } else {
+    const grid = document.createElement('div'); grid.className = 'chart-grid'; host.appendChild(grid);
+    for (const s of sel) {
+      const wrap = document.createElement('div'); wrap.className = 'chart-wrap';
+      wrap.innerHTML = `<h3>${s.name}</h3><canvas></canvas>`; grid.appendChild(wrap);
+      state.charts.push(makeChart(wrap.querySelector('canvas'), [s], state.mode === 'pct' ? (s.unit === '%' ? 'pts' : '') : s.unit));
+    }
+    document.getElementById('note').textContent = '';
+  }
+}
+
+/* ---------- Table ---------- */
+function renderTable() {
+  const tbl = document.getElementById('table'), tb = tbl.querySelector('tbody');
+  const sel = selectedSeries().filter(s => state.data[s.id]);
+  tbl.hidden = !sel.length; tb.innerHTML = '';
+  for (const s of sel) {
+    const w = windowed(s.id); const first = w[0], last = w[w.length - 1];
+    const vals = w.map(p => p.v); const lo = Math.min(...vals), hi = Math.max(...vals);
+    const d = last.v - first.v; const pct = s.unit === '%' ? null : (last.v / first.v - 1) * 100;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="name"><span class="swatch" style="display:inline-block;vertical-align:middle;margin-right:8px;background:${s.color}"></span>${s.name}<span class="unit">${s.unit}</span></td>
+      <td>${fmtNum(last.v, s.unit)}</td>
+      <td>${fmtDate(last.t)}</td>
+      <td>${fmtNum(first.v, s.unit)} <span class="unit">${fmtDate(first.t)}</span></td>
+      <td class="${cls(d)}">${d > 0 ? '+' : ''}${s.unit === '%' ? (d * 100).toFixed(0) + ' bp' : fmtNum(d, s.unit)}</td>
+      <td class="${cls(d)}">${s.unit === '%' ? '—' : fmtPct(pct)}</td>
+      <td>${fmtNum(lo, s.unit)}</td><td>${fmtNum(hi, s.unit)}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+function renderAll() {
+  try { renderCharts(); }
+  catch (e) {
+    document.getElementById('charts').innerHTML = '<div class="chart-wrap"><div class="empty">Chart failed to draw: ' + e.message + '</div></div>';
+    console.error(e);
+  }
+  renderTable();
+}
+
+/* ---------- Controls ---------- */
+function bindSeg(id, get, set) {
+  const seg = document.getElementById(id);
+  seg.querySelectorAll('button').forEach(b => b.onclick = () => {
+    set(b.dataset.v);
+    seg.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x.dataset.v === get()));
+    renderAll();
+  });
+}
+const hz = document.getElementById('horizon');
+hz.innerHTML = HORIZONS.map(h => `<button type="button" data-v="${h[0]}" aria-pressed="${h[0] === state.horizon}">${h[0]}</button>`).join('');
+bindSeg('horizon', () => state.horizon, v => state.horizon = v);
+bindSeg('mode',    () => state.mode,    v => state.mode = v);
+bindSeg('layout',  () => state.layout,  v => state.layout = v);
+window.addEventListener('resize', () => state.charts.forEach(c => c.resize()));
+
+renderRail(); renderAll(); loadAll();
+</script>
+</body>
+</html>
